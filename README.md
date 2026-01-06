@@ -4,7 +4,7 @@ A lightweight, browser-based suite for creating, editing, and verifying object d
 
 Built with React (Standalone), this toolkit requires **no installation**, **no backend**, and runs entirely in your web browser.
 
-**[Live Demo](https://)** *(Replace the link above once you enable GitHub Pages)*
+**[Live Demo](https://mic7ch1.github.io/YOLO_Annotation_Toolkit/)**
 
 ## Project Structure
 
