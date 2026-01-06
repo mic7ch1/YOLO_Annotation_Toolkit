@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YOLO Tagger - Universal Drag & Drop</title>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <style>
+        /* LAYOUT */
+        body, html { margin: 0; padding: 0; height: 100%; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+        
+        #app-root { display: flex; width: 100vw; height: 100vh; }
+
+        /* SIDEBAR */
+        .sidebar {
+            width: 320px;
+            background: #f8f9fa;
+            border-right: 1px solid #ddd;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            flex-shrink: 0;
+            overflow-y: auto;
+            z-index: 10;
+        }
+
+        /* STAGE */
+        .stage {
+            flex: 1;
+            background: #333;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+            overflow: hidden; 
+            position: relative;
+        }
+
+        .stage.dragging { background: #444; border: 4px dashed #007bff; }
+
+        /* CANVAS */
+        .canvas-wrapper {
+            position: relative;
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+            line-height: 0;
+            user-select: none;
+            width: fit-content; 
+            max-width: 100%;
+        }
+
+        .target-image { display: block; max-width: 100%; max-height: 90vh; object-fit: contain; }
+
+        /* UI COMPONENTS */
+        h2 { margin-top: 0; font-size: 1.2rem; color: #333; }
+        h3 { font-size: 0.9rem; text-transform: uppercase; color: #888; margin: 15px 0 5px 0; letter-spacing: 0.5px; }
+        
+        .btn { padding: 8px 12px; cursor: pointer; border: none; border-radius: 4px; color: white; font-weight: bold; width: 100%; margin-top: 5px; font-size: 14px; transition: opacity 0.2s; }
+        .btn:hover { opacity: 0.9; }
+        .btn-green { background: #28a745; }
+        .btn-blue { background: #007bff; }
+        .btn-red { background: #dc3545; }
+        .btn-gray { background: #6c757d; }
+        .btn-outline { background: transparent; border: 1px solid #ccc; color: #666; }
+        .btn-outline:hover { background: #eee; }
+
+        input[type="text"] { padding: 6px; border: 1px solid #ccc; border-radius: 4px; width: 100%; box-sizing: border-box; }
+        
+        .class-item {
+            padding: 6px 10px; border: 1px solid #ddd; background: white; 
+            margin-bottom: 4px; cursor: pointer; border-radius: 4px; 
+            display: flex; justify-content: space-between; align-items: center;
+            font-size: 14px;
+        }
+        .class-item.active { border-color: #007bff; background: #e7f1ff; }
+        
+        .class-delete-btn {
+            background: transparent; color: #ccc; border: none;
+            width: 20px; height: 20px; display: flex; align-items: center; justify-content: center;
+            cursor: pointer; margin-left: 5px; border-radius: 4px;
+        }
+        .class-delete-btn:hover { background: #ffebeb; color: red; }
+
+        /* BOXES */
+        .bounding-box { position: absolute; border-width: 2px; border-style: solid; }
+        .bounding-box:hover { background-color: rgba(255,255,255,0.2); z-index: 10; }
+        
+        .box-label {
+            position: absolute; top: -18px; left: -2px; 
+            color: white; font-size: 11px; font-weight: bold;
+            padding: 1px 4px; white-space: nowrap; pointer-events: none;
+        }
+        
+        .delete-box-btn {
+            position: absolute; top: -10px; right: -10px;
+            width: 18px; height: 18px; background: red; color: white;
+            border-radius: 50%; border: 2px solid white;
+            cursor: pointer; display: flex; align-items: center; justify-content: center;
+            font-size: 12px; z-index: 20;
+        }
+        
+        /* SETTINGS PANEL */
+        .settings-panel {
+            background: #eee; padding: 10px; border-radius: 4px; margin-top: 5px;
+            font-size: 12px; border: 1px solid #ddd;
+        }
+        .settings-row { display: flex; justify-content: space-between; margin-bottom: 5px; align-items: center; }
+        .settings-row label { color: #555; width: 80px; }
+        .settings-row input { flex: 1; padding: 2px 4px; font-size: 12px; }
+
+        .empty-state { color: #aaa; text-align: center; border: 2px dashed #555; padding: 40px; border-radius: 10px; }
+    </style>
+</head>
+<body>
+
+<div id="root"></div>
+
+<script type="text/babel">
+    const { useState, useRef, useEffect } = React;
+
+    // --- UTILS ---
+    function getColor(str) {
+        let hash = 0;
+        for (let i = 0; i < str.length; i++) hash = str.charCodeAt(i) + ((hash << 5) - hash);
+        const c = (hash & 0x00ffffff).toString(16).toUpperCase();
+        return '#' + '00000'.substring(0, 6 - c.length) + c;
+    }
+
+    // --- MAIN COMPONENT ---
+    function App() {
+        // --- DATA STATE ---
+        const [imageSrc, setImageSrc] = useState(null);
+        const [fileName, setFileName] = useState("image");
+        const [classes, setClasses] = useState(() => {
+            const saved = localStorage.getItem('yolo-tagger-classes');
+            return saved ? JSON.parse(saved) : [];
+        });
+        const [boxes, setBoxes] = useState([]);
+
+        // --- UI STATE ---
+        const [activeClass, setActiveClass] = useState(null);
+        const [newClassInput, setNewClassInput] = useState("");
+        const [isDrawing, setIsDrawing] = useState(false);
+        const [startPos, setStartPos] = useState(null); 
+        const [currentBox, setCurrentBox] = useState(null);
+        const [isDraggingFile, setIsDraggingFile] = useState(false);
+        
+        // --- CSV IMPORT SETTINGS ---
+        const [showCsvSettings, setShowCsvSettings] = useState(false);
+        const [csvHeaders, setCsvHeaders] = useState({
+            className: "class_name",
+            xCenter: "x_center",
+            yCenter: "y_center",
+            width: "width",
+            height: "height"
+        });
+
+        // --- REFS ---
+        const imgRef = useRef(null);
+        const containerRef = useRef(null);
+        const fileInputRef = useRef(null); 
+        const csvInputRef = useRef(null);
+
+        // --- EFFECTS ---
+        useEffect(() => {
+            localStorage.setItem('yolo-tagger-classes', JSON.stringify(classes));
+        }, [classes]);
+
+        // --- HANDLERS: IMAGE ---
+        const processImageFile = (file) => {
+            if (!file || !file.type.startsWith('image/')) {
+                alert("Please select a valid image file.");
+                return;
+            }
+            const url = URL.createObjectURL(file);
+            setImageSrc(url);
+            setFileName(file.name.split('.')[0]);
+            setBoxes([]); // Clear boxes on new image load
+        };
+
+        const handleImageUpload = (e) => processImageFile(e.target.files?.[0]);
+
+        // --- HANDLERS: CSV IMPORT ---
+        const handleCsvUpload = (e) => {
+            const file = e.target.files?.[0];
+            processCsvFile(file);
+            e.target.value = ""; // Reset input
+        };
+
+        const processCsvFile = (file) => {
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                parseCsv(event.target.result);
+            };
+            reader.readAsText(file);
+        };
+
+        const parseCsv = (csvText) => {
+            const lines = csvText.trim().split('\n');
+            if (lines.length < 2) {
+                alert("CSV seems empty or missing headers.");
+                return;
+            }
+
+            // 1. Parse Headers
+            const headerLine = lines[0].split(',').map(h => h.trim());
+            const getIdx = (key) => headerLine.indexOf(csvHeaders[key]);
+
+            const idxName = getIdx('className');
+            const idxX = getIdx('xCenter');
+            const idxY = getIdx('yCenter');
+            const idxW = getIdx('width');
+            const idxH = getIdx('height');
+
+            if (idxX === -1 || idxY === -1 || idxW === -1 || idxH === -1) {
+                alert(`Could not find required columns. \nExpected: ${Object.values(csvHeaders).join(', ')}.\nFound: ${headerLine.join(', ')}.\nPlease check CSV Settings.`);
+                return;
+            }
+
+            const newBoxes = [];
+            const newClasses = new Set(classes);
+            let importedCount = 0;
+
+            // 2. Parse Rows
+            for (let i = 1; i < lines.length; i++) {
+                const row = lines[i].split(',').map(c => c.trim());
+                if (row.length < headerLine.length) continue;
+
+                const className = idxName !== -1 ? row[idxName] : "Unknown";
+                const xc = parseFloat(row[idxX]);
+                const yc = parseFloat(row[idxY]);
+                const w = parseFloat(row[idxW]);
+                const h = parseFloat(row[idxH]);
+
+                if (isNaN(xc) || isNaN(yc) || isNaN(w) || isNaN(h)) continue;
+
+                if (className && !newClasses.has(className)) {
+                    newClasses.add(className);
+                }
+
+                // Convert YOLO (Center) -> Internal (Top-Left)
+                const x = xc - (w / 2);
+                const y = yc - (h / 2);
+
+                newBoxes.push({
+                    id: Date.now() + i,
+                    x: Math.max(0, x),
+                    y: Math.max(0, y),
+                    w: w,
+                    h: h,
+                    label: className
+                });
+                importedCount++;
+            }
+
+            setClasses(Array.from(newClasses));
+            setBoxes(prev => [...prev, ...newBoxes]);
+            
+            // Auto-select the first new class if none selected
+            if (!activeClass && newClasses.size > 0) {
+                 setActiveClass(Array.from(newClasses)[0]);
+            }
+        };
+
+        const updateCsvHeaderSetting = (key, val) => {
+            setCsvHeaders(prev => ({ ...prev, [key]: val }));
+        };
+
+        // --- HANDLERS: UNIVERSAL DRAG & DROP ---
+        const handleDrop = (e) => {
+            e.preventDefault();
+            setIsDraggingFile(false);
+            
+            const file = e.dataTransfer.files?.[0];
+            if (!file) return;
+
+            // DETECT FILE TYPE
+            if (file.type.startsWith('image/')) {
+                processImageFile(file);
+            } else if (file.name.toLowerCase().endsWith('.csv') || file.type === 'text/csv' || file.type === 'application/vnd.ms-excel') {
+                processCsvFile(file);
+            } else {
+                alert("Unsupported file type.\nPlease drop an Image or a CSV file.");
+            }
+        };
+
+        const handleDragOver = (e) => { e.preventDefault(); setIsDraggingFile(true); };
+        const handleDragLeave = (e) => { e.preventDefault(); setIsDraggingFile(false); };
+
+        const handleReset = () => {
+            if (confirm("Clear image and annotations?")) {
+                setImageSrc(null);
+                setBoxes([]);
+                setFileName("image");
+                if(fileInputRef.current) fileInputRef.current.value = ""; 
+                if(csvInputRef.current) csvInputRef.current.value = ""; 
+            }
+        };
+
+        // --- HANDLERS: CLASSES ---
+        const handleAddClass = () => {
+            const val = newClassInput.trim();
+            if(!val || classes.includes(val)) return;
+            const newClasses = [...classes, val];
+            setClasses(newClasses);
+            setNewClassInput("");
+            if(newClasses.length === 1 || !activeClass) setActiveClass(val);
+        };
+
+        const handleDeleteClass = (e, classToDelete) => {
+            e.stopPropagation();
+            if(!confirm(`Delete class "${classToDelete}"? Removes all boxes with this tag.`)) return;
+            const newClasses = classes.filter(c => c !== classToDelete);
+            setClasses(newClasses);
+            setBoxes(boxes.filter(b => b.label !== classToDelete));
+            if (activeClass === classToDelete) setActiveClass(newClasses[0] || null);
+        };
+
+        // --- HANDLERS: DRAWING ---
+        const getRelativeCoords = (e) => {
+            if (!containerRef.current) return null;
+            const rect = containerRef.current.getBoundingClientRect();
+            return {
+                x: Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)),
+                y: Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height))
+            };
+        };
+
+        const handleMouseDown = (e) => {
+            if (e.button !== 0) return;
+            if (!activeClass) { alert("Please select a Class first."); return; }
+            const coords = getRelativeCoords(e);
+            if(!coords) return;
+            setIsDrawing(true);
+            setStartPos(coords);
+        };
+
+        const handleMouseMove = (e) => {
+            if (!isDrawing || !startPos) return;
+            const coords = getRelativeCoords(e);
+            const x = Math.min(coords.x, startPos.x);
+            const y = Math.min(coords.y, startPos.y);
+            const w = Math.abs(coords.x - startPos.x);
+            const h = Math.abs(coords.y - startPos.y);
+            setCurrentBox({ x, y, w, h, label: activeClass });
+        };
+
+        const handleMouseUp = () => {
+            if (currentBox && currentBox.w > 0.005 && currentBox.h > 0.005) {
+                setBoxes([...boxes, { ...currentBox, id: Date.now() }]);
+            }
+            setIsDrawing(false);
+            setStartPos(null);
+            setCurrentBox(null);
+        };
+
+        // --- HANDLERS: EXPORT ---
+        const handleExport = () => {
+            if (boxes.length === 0) { alert("No boxes to export."); return; }
+            let csvContent = "class_id,class_name,x_center,y_center,width,height\n";
+            boxes.forEach(box => {
+                const x_center = box.x + (box.w / 2);
+                const y_center = box.y + (box.h / 2);
+                const classIdx = classes.indexOf(box.label);
+                csvContent += `${classIdx},${box.label},${x_center.toFixed(6)},${y_center.toFixed(6)},${box.w.toFixed(6)},${box.h.toFixed(6)}\n`;
+            });
+            const blob = new Blob([csvContent], { type: 'text/csv' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `${fileName}_annotations.csv`;
+            link.click();
+            
+            // classes.txt export logic removed
+        };
+
+        return (
+            <div id="app-root">
+                {/* LEFT SIDEBAR */}
+                <div className="sidebar">
+                    <h2>YOLO Tagger</h2>
+                    <a href="index.html" className="btn btn-outline" style={{textDecoration: 'none', display: 'block', textAlign: 'center', marginBottom: 10}}>← Back to Dashboard</a>
+                    <button className="btn btn-red" onClick={handleReset}>Refresh / Clear</button>
+
+                    {/* 1. IMAGE IMPORT */}
+                    <h3>1. Image</h3>
+                    <input ref={fileInputRef} type="file" accept="image/*" onChange={handleImageUpload} />
+                    <div style={{fontSize: 11, color: '#666', marginTop: 3}}>or Drag & Drop on canvas</div>
+
+                    {/* 2. CSV IMPORT */}
+                    <h3>2. Annotations (Optional)</h3>
+                    <div style={{display:'flex', gap: 5}}>
+                        <input ref={csvInputRef} type="file" accept=".csv" onChange={handleCsvUpload} style={{fontSize:12}} />
+                    </div>
+                    
+                    <div style={{marginTop: 5}}>
+                        <button className="btn btn-outline" style={{padding: '4px 8px', fontSize: 11, width: 'auto'}} 
+                                onClick={() => setShowCsvSettings(!showCsvSettings)}>
+                            {showCsvSettings ? "Hide CSV Settings" : "Configure Columns..."}
+                        </button>
+                    </div>
+
+                    {showCsvSettings && (
+                        <div className="settings-panel">
+                            <div style={{fontWeight:'bold', marginBottom:5}}>Map CSV Columns:</div>
+                            <div className="settings-row"><label>Name:</label><input value={csvHeaders.className} onChange={e=>updateCsvHeaderSetting('className', e.target.value)} /></div>
+                            <div className="settings-row"><label>Center X:</label><input value={csvHeaders.xCenter} onChange={e=>updateCsvHeaderSetting('xCenter', e.target.value)} /></div>
+                            <div className="settings-row"><label>Center Y:</label><input value={csvHeaders.yCenter} onChange={e=>updateCsvHeaderSetting('yCenter', e.target.value)} /></div>
+                            <div className="settings-row"><label>Width:</label><input value={csvHeaders.width} onChange={e=>updateCsvHeaderSetting('width', e.target.value)} /></div>
+                            <div className="settings-row"><label>Height:</label><input value={csvHeaders.height} onChange={e=>updateCsvHeaderSetting('height', e.target.value)} /></div>
+                        </div>
+                    )}
+
+                    {/* 3. CLASS MANAGER */}
+                    <h3>3. Classes</h3>
+                    <div style={{display:'flex', gap:5, marginBottom: 10}}>
+                        <input value={newClassInput} onChange={e => setNewClassInput(e.target.value)} 
+                            placeholder="Add Class..." 
+                            onKeyDown={(e) => e.key === 'Enter' && handleAddClass()} />
+                        <button className="btn-blue" style={{width:'auto'}} onClick={handleAddClass}>Add</button>
+                    </div>
+                    <div style={{overflowY: 'auto', flex: 1, minHeight: 100, border: '1px solid #eee', borderRadius: 4, padding: 2}}>
+                        {classes.length === 0 && <div style={{color:'#ccc', padding:10, fontStyle:'italic'}}>No classes.</div>}
+                        {classes.map((c, i) => (
+                            <div key={c} className={`class-item ${activeClass === c ? 'active' : ''}`}
+                                onClick={() => setActiveClass(c)}>
+                                <div style={{display:'flex', alignItems:'center', gap: 8}}>
+                                    <div style={{width:12, height:12, background: getColor(c), borderRadius: 2}}></div>
+                                    <span>{c}</span>
+                                </div>
+                                <button className="class-delete-btn" title="Delete" onClick={(e) => handleDeleteClass(e, c)}>×</button>
+                            </div>
+                        ))}
+                    </div>
+
+                    {/* 4. EXPORT */}
+                    <div style={{marginTop: 'auto', paddingTop: 10, borderTop: '1px solid #eee'}}>
+                         <div style={{fontSize: 12, color: '#666', marginBottom: 5}}>Boxes: {boxes.length}</div>
+                         <button className="btn btn-green" onClick={handleExport}>Download CSV</button>
+                    </div>
+                </div>
+
+                {/* RIGHT STAGE */}
+                <div className={`stage ${isDraggingFile ? 'dragging' : ''}`}
+                    onDrop={handleDrop} onDragOver={handleDragOver} onDragLeave={handleDragLeave}>
+                    {imageSrc ? (
+                        <div className="canvas-wrapper" ref={containerRef}
+                            onMouseDown={handleMouseDown} onMouseMove={handleMouseMove} onMouseUp={handleMouseUp}
+                            style={{ cursor: activeClass ? 'crosshair' : 'default' }}>
+                            <img ref={imgRef} src={imageSrc} className="target-image" draggable={false} />
+                            
+                            {/* RENDER BOXES */}
+                            {boxes.map(box => {
+                                const color = getColor(box.label);
+                                return (
+                                    <div key={box.id} className="bounding-box" style={{
+                                        left: `${box.x * 100}%`, top: `${box.y * 100}%`, width: `${box.w * 100}%`, height: `${box.h * 100}%`,
+                                        borderColor: color, backgroundColor: `${color}33`
+                                    }}>
+                                        <div className="box-label" style={{background: color}}>{box.label}</div>
+                                        <div className="delete-box-btn" onClick={(e) => { e.stopPropagation(); setBoxes(boxes.filter(b => b.id !== box.id)) }}>×</div>
+                                    </div>
+                                );
+                            })}
+                            
+                            {/* CURRENT DRAWING */}
+                            {currentBox && <div className="bounding-box" style={{
+                                left: `${currentBox.x * 100}%`, top: `${currentBox.y * 100}%`, width: `${currentBox.w * 100}%`, height: `${currentBox.h * 100}%`,
+                                borderColor: 'white', borderStyle: 'dashed', boxShadow: '0 0 4px rgba(0,0,0,0.5)'
+                            }} />}
+                        </div>
+                    ) : (
+                        <div className="empty-state">
+                            <h3>No Image Loaded</h3>
+                            <p>Drop Image here to start.<br/>Drop CSV to load boxes.</p>
+                        </div>
+                    )}
+                </div>
+            </div>
+        );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+</script>
+
+</body>
+</html>
